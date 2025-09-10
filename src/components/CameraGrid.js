@@ -2,7 +2,8 @@
 import React, { useRef, useState, useEffect } from "react";
 import { io } from "socket.io-client";
 
-const SERVER_URL = "http://localhost:5000"; 
+const SERVER_URL = "https://multicam-backend.onrender.com/"; 
+
 const ICE_CONFIG = { iceServers: [{ urls: "stun:stun.l.google.com:19302" }] };
 
 export default function CameraGrid() {
