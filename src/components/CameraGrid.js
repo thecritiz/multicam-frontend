@@ -2,13 +2,13 @@
 import React, { useRef, useState, useEffect } from "react";
 import { io } from "socket.io-client";
 
-const SERVER_URL = "https://multicam-backend.onrender.com"; // <- set your deployed backend URL
+const SERVER_URL = "https://multicam-backend.onrender.com"; // <- deployed backend URL
 const ICE_CONFIG = { iceServers: [{ urls: "stun:stun.l.google.com:19302" }] };
 
 export default function CameraGrid() {
   const localVideoRef = useRef(null);
   const socketRef = useRef(null);
-  const peersRef = useRef({}); // map peerId -> RTCPeerConnection
+  const peersRef = useRef({});
   const localStreamRef = useRef(null);
 
   const [remoteStreams, setRemoteStreams] = useState([]); // [{id, stream}]
@@ -18,7 +18,6 @@ export default function CameraGrid() {
   const [cameraStarted, setCameraStarted] = useState(false);
 
   useEffect(() => {
-    // connect socket on mount
     socketRef.current = io(SERVER_URL, { transports: ["websocket", "polling"] });
 
     socketRef.current.on("connect", () => {
@@ -26,15 +25,11 @@ export default function CameraGrid() {
       console.log("socket connected:", socketRef.current.id);
     });
 
-    // list of peers in the room (sent only to the joining client)
     socketRef.current.on("users", handleUsers);
-
-    // standard signaling messages
     socketRef.current.on("offer", handleReceiveOffer);
     socketRef.current.on("answer", handleReceiveAnswer);
     socketRef.current.on("candidate", handleNewCandidate);
 
-    // when someone else disconnects / leaves the room
     socketRef.current.on("user-disconnected", (id) => {
       console.log("user-disconnected", id);
       const pc = peersRef.current[id];
@@ -44,11 +39,9 @@ export default function CameraGrid() {
     });
 
     return () => {
-      // cleanup on unmount
       if (socketRef.current) {
         socketRef.current.disconnect();
       }
-      // close all peer connections
       Object.values(peersRef.current).forEach((pc) => pc.close());
       peersRef.current = {};
     };
@@ -68,7 +61,7 @@ export default function CameraGrid() {
     }
   };
 
-  // join a room (must start camera before joining)
+  // join a room
   const joinRoom = () => {
     if (!cameraStarted) {
       alert("Please Start Camera before joining a room.");
@@ -78,14 +71,14 @@ export default function CameraGrid() {
       alert("Enter a room name.");
       return;
     }
-    socketRef.current.emit("join-room", { room: room.trim() });
+    // 🔧 FIXED: send room name as plain string
+    socketRef.current.emit("join-room", room.trim());
     setJoined(true);
   };
 
-  // leave the current room
+  // leave the room
   const leaveRoom = () => {
     if (!joined) return;
-    // close peer connections
     Object.values(peersRef.current).forEach((pc) => pc.close());
     peersRef.current = {};
     setRemoteStreams([]);
@@ -93,8 +86,6 @@ export default function CameraGrid() {
     setJoined(false);
   };
 
-  // when the server returns a list of existing users in the room,
-  // create connections (we are the initiator for these)
   const handleUsers = async (users) => {
     for (const userId of users) {
       await createPeerConnection(userId, true);
@@ -107,7 +98,6 @@ export default function CameraGrid() {
     const pc = new RTCPeerConnection(ICE_CONFIG);
     peersRef.current[peerId] = pc;
 
-    // add local tracks
     if (localStreamRef.current) {
       localStreamRef.current.getTracks().forEach((track) => pc.addTrack(track, localStreamRef.current));
     }
@@ -120,7 +110,9 @@ export default function CameraGrid() {
 
     pc.ontrack = (e) => {
       const remoteStream = e.streams[0];
-      setRemoteStreams((prev) => (prev.find((p) => p.id === peerId) ? prev : [...prev, { id: peerId, stream: remoteStream }]));
+      setRemoteStreams((prev) =>
+        prev.find((p) => p.id === peerId) ? prev : [...prev, { id: peerId, stream: remoteStream }]
+      );
     };
 
     if (isInitiator) {
@@ -132,7 +124,6 @@ export default function CameraGrid() {
     return pc;
   };
 
-  // when we receive an offer from a peer
   const handleReceiveOffer = async ({ from, sdp }) => {
     await createPeerConnection(from, false);
     const pc = peersRef.current[from];
@@ -142,14 +133,12 @@ export default function CameraGrid() {
     socketRef.current.emit("answer", { to: from, sdp: answer });
   };
 
-  // when we receive an answer to our offer
   const handleReceiveAnswer = async ({ from, sdp }) => {
     const pc = peersRef.current[from];
     if (!pc) return;
     await pc.setRemoteDescription(new RTCSessionDescription(sdp));
   };
 
-  // ICE candidate forwarding
   const handleNewCandidate = async ({ from, candidate }) => {
     const pc = peersRef.current[from];
     if (!pc) return;
@@ -196,12 +185,15 @@ export default function CameraGrid() {
           </div>
 
           <div className="text-sm text-gray-600">
-            {userId && <div>Socket ID: {userId.slice(0, 6)} {joined && <span> • Room: {room}</span>}</div>}
+            {userId && (
+              <div>
+                Socket ID: {userId.slice(0, 6)} {joined && <span> • Room: {room}</span>}
+              </div>
+            )}
           </div>
         </div>
 
         <div className="grid gap-6 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4">
-          {/* Local */}
           <div className="relative rounded-xl overflow-hidden shadow-lg bg-black">
             <video ref={localVideoRef} autoPlay playsInline className="w-full h-48 object-cover" />
             <div className="absolute bottom-2 left-2 bg-blue-600 text-white text-xs px-2 py-1 rounded">
@@ -209,10 +201,14 @@ export default function CameraGrid() {
             </div>
           </div>
 
-          {/* Remote */}
           {remoteStreams.map((s) => (
             <div key={s.id} className="relative rounded-xl overflow-hidden shadow-lg bg-black">
-              <video ref={(ref) => ref && (ref.srcObject = s.stream)} autoPlay playsInline className="w-full h-48 object-cover" />
+              <video
+                ref={(ref) => ref && (ref.srcObject = s.stream)}
+                autoPlay
+                playsInline
+                className="w-full h-48 object-cover"
+              />
               <div className="absolute bottom-2 left-2 bg-gray-800 text-white text-xs px-2 py-1 rounded">
                 Peer ({s.id.slice(0, 5)})
               </div>
