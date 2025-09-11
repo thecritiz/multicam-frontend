@@ -2,8 +2,7 @@
 import React, { useRef, useState, useEffect } from "react";
 import { io } from "socket.io-client";
 
-const SERVER_URL = "https://multicam-backend.onrender.com/"; 
-
+const SERVER_URL = "https://multicam-backend.onrender.com"; // ✅ use deployed backend
 const ICE_CONFIG = { iceServers: [{ urls: "stun:stun.l.google.com:19302" }] };
 
 export default function CameraGrid() {
@@ -13,10 +12,16 @@ export default function CameraGrid() {
   const localStreamRef = useRef(null);
 
   const [remoteStreams, setRemoteStreams] = useState([]);
+  const [userId, setUserId] = useState(null);
 
   useEffect(() => {
     socketRef.current = io(SERVER_URL);
-    socketRef.current.on("connect", () => console.log("Connected:", socketRef.current.id));
+
+    socketRef.current.on("connect", () => {
+      setUserId(socketRef.current.id);
+      console.log("Connected:", socketRef.current.id);
+    });
+
     socketRef.current.on("users", handleUsers);
     socketRef.current.on("offer", handleReceiveOffer);
     socketRef.current.on("answer", handleReceiveAnswer);
@@ -59,7 +64,9 @@ export default function CameraGrid() {
 
     pc.ontrack = e => {
       const remoteStream = e.streams[0];
-      setRemoteStreams(prev => prev.find(p => p.id === peerId) ? prev : [...prev, { id: peerId, stream: remoteStream }]);
+      setRemoteStreams(prev =>
+        prev.find(p => p.id === peerId) ? prev : [...prev, { id: peerId, stream: remoteStream }]
+      );
     };
 
     if (isInitiator) {
@@ -100,21 +107,50 @@ export default function CameraGrid() {
   };
 
   return (
-    <section id="camera" className="py-12 bg-gray-100">
+    <section id="camera" className="py-12 bg-gray-100 min-h-screen">
       <div className="max-w-6xl mx-auto px-4">
         <h2 className="text-3xl font-bold mb-6 text-center">Camera Grid</h2>
-        <button onClick={startCamera} className="mb-4 px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700">
-          Start Camera
-        </button>
-        <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
-          <div>
-            <p className="font-bold">You</p>
-            <video ref={localVideoRef} autoPlay playsInline className="w-full h-48 bg-black" />
+
+        {/* Start Button */}
+        <div className="flex justify-center mb-6">
+          <button
+            onClick={startCamera}
+            className="px-6 py-3 bg-blue-600 text-white rounded-xl shadow hover:bg-blue-700 transition"
+          >
+            Start Camera
+          </button>
+        </div>
+
+        {/* Video Grid */}
+        <div className="grid gap-6 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4">
+          {/* Local Stream */}
+          <div className="relative rounded-xl overflow-hidden shadow-lg bg-black">
+            <video
+              ref={localVideoRef}
+              autoPlay
+              playsInline
+              className="w-full h-48 object-cover"
+            />
+            <div className="absolute bottom-2 left-2 bg-blue-600 text-white text-xs px-2 py-1 rounded">
+              You ({userId?.slice(0, 5)})
+            </div>
           </div>
+
+          {/* Remote Streams */}
           {remoteStreams.map(s => (
-            <div key={s.id}>
-              <p className="font-bold">Peer: {s.id}</p>
-              <video ref={ref => ref && (ref.srcObject = s.stream)} autoPlay playsInline className="w-full h-48 bg-black" />
+            <div
+              key={s.id}
+              className="relative rounded-xl overflow-hidden shadow-lg bg-black"
+            >
+              <video
+                ref={ref => ref && (ref.srcObject = s.stream)}
+                autoPlay
+                playsInline
+                className="w-full h-48 object-cover"
+              />
+              <div className="absolute bottom-2 left-2 bg-gray-800 text-white text-xs px-2 py-1 rounded">
+                Peer ({s.id.slice(0, 5)})
+              </div>
             </div>
           ))}
         </div>
