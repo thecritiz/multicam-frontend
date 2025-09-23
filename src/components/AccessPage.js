@@ -7,14 +7,14 @@ export default function AccessPage() {
   const [error, setError] = useState("");
   const navigate = useNavigate();
 
-  // Hardcoded for demo — you can load from env or backend later
+  // Hardcoded for demo — later fetch from backend or env
   const ACCESS_CODE = "FYP2025";
 
   const handleSubmit = (e) => {
     e.preventDefault();
     if (code.trim() === ACCESS_CODE) {
       localStorage.setItem("verified", "true"); // persist access
-      navigate("/"); // send to homepage
+      navigate("/home"); // ✅ redirect to homepage with UI
     } else {
       setError("❌ Invalid access code");
     }
