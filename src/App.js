@@ -51,8 +51,7 @@ export default function App() {
           }
         />
 
-        {/* Catch-all redirect */}
-        <Route path="*" element={<Navigate to="/" replace />} />
+    
       </Routes>
     </BrowserRouter>
   );
