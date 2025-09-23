@@ -1,12 +1,18 @@
-// src/App.js
-import React from "react";
+import React, { useState } from "react";
 import Header from "./components/Header";
 import Timeline from "./components/Timeline";
 import Workflow from "./components/Workflow";
 import CameraGrid from "./components/CameraGrid";
 import Footer from "./components/Footer";
+import AccessPage from "./components/AccessPage";
 
 function App() {
+  const [accessGranted, setAccessGranted] = useState(false);
+
+  if (!accessGranted) {
+    return <AccessPage onAccessGranted={() => setAccessGranted(true)} />;
+  }
+
   return (
     <div className="min-h-screen flex flex-col bg-gray-50">
       {/* Header */}
