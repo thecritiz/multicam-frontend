@@ -2,7 +2,7 @@ import React, { useState } from "react";
 import Header from "./components/Header";
 import Timeline from "./components/Timeline";
 import Workflow from "./components/Workflow";
-import CameraGrid from "./components/CameraGrid";
+import CameraGrid from "./components/CameraGridController";
 import Footer from "./components/Footer";
 import AccessPage from "./components/AccessPage";
 

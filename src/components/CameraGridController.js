@@ -1,7 +1,7 @@
 // src/components/CameraGrid.js
 import React, { useRef, useState, useEffect } from "react";
 import { io } from "socket.io-client";
-
+import CameraGridUI from "./CameraGridUI";
 const SERVER_URL = "https://multicam-backend.onrender.com"; // <- deployed backend URL
 const ICE_CONFIG = { iceServers: [{ urls: "stun:stun.l.google.com:19302" }] };
 
@@ -16,6 +16,22 @@ export default function CameraGrid() {
   const [room, setRoom] = useState("");
   const [joined, setJoined] = useState(false);
   const [cameraStarted, setCameraStarted] = useState(false);
+  const [camOn, setCamOn] = useState(true);
+const [micOn, setMicOn] = useState(true);
+
+const toggleCam = () => {
+  if (!localStreamRef.current) return;
+  const enabled = !camOn;
+  localStreamRef.current.getVideoTracks().forEach(t => (t.enabled = enabled));
+  setCamOn(enabled);
+};
+
+const toggleMic = () => {
+  if (!localStreamRef.current) return;
+  const enabled = !micOn;
+  localStreamRef.current.getAudioTracks().forEach(t => (t.enabled = enabled));
+  setMicOn(enabled);
+};
 
   useEffect(() => {
     socketRef.current = io(SERVER_URL, { transports: ["websocket", "polling"] });
@@ -47,19 +63,31 @@ export default function CameraGrid() {
     };
   }, []);
 
-  // start local camera
-  const startCamera = async () => {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-      localVideoRef.current.srcObject = stream;
-      localVideoRef.current.muted = true;
-      localStreamRef.current = stream;
-      setCameraStarted(true);
-    } catch (err) {
-      console.error("getUserMedia error:", err);
-      alert("Cannot access camera/mic. Check permissions.");
-    }
-  };
+  // After cameraStarted flips true, the PiP <video> mounts.
+// This effect runs after that mount and safely assigns srcObject.
+useEffect(() => {
+  if (cameraStarted && localVideoRef.current && localStreamRef.current) {
+    localVideoRef.current.srcObject = localStreamRef.current;
+    localVideoRef.current.muted = true;
+  }
+}, [cameraStarted]);
+
+const startCamera = async () => {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+    localStreamRef.current = stream; // store stream first
+    setCameraStarted(true);          // flip state → PiP mounts → useEffect assigns srcObject
+  } catch (err) {
+    console.error("getUserMedia error:", err.name, err.message);
+    const messages = {
+      NotAllowedError:  "Permission denied. Click the lock icon → allow Camera & Mic → reload.",
+      NotFoundError:    "No camera or microphone found on this device.",
+      NotReadableError: "Camera is already in use by another app. Close it and retry.",
+      SecurityError:    "Camera blocked — must be on HTTPS or localhost.",
+    };
+    alert(messages[err.name] || `Camera error: ${err.name} — ${err.message}`);
+  }
+};
 
   // join a room
   const joinRoom = () => {
@@ -150,72 +178,21 @@ export default function CameraGrid() {
   };
 
   return (
-    <section id="camera" className="py-12 bg-gray-100 min-h-screen">
-      <div className="max-w-6xl mx-auto px-4">
-        <h2 className="text-3xl font-bold mb-6 text-center">Camera Grid (Rooms)</h2>
-
-        <div className="flex flex-col md:flex-row items-center justify-center gap-4 mb-6">
-          <div className="flex gap-2">
-            <button
-              onClick={startCamera}
-              className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
-              disabled={cameraStarted}
-            >
-              {cameraStarted ? "Camera Started" : "Start Camera"}
-            </button>
-          </div>
-
-          <div className="flex gap-2 items-center">
-            <input
-              type="text"
-              value={room}
-              onChange={(e) => setRoom(e.target.value)}
-              placeholder="Enter room name"
-              className="px-3 py-2 border rounded"
-            />
-            {!joined ? (
-              <button onClick={joinRoom} className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700">
-                Join Room
-              </button>
-            ) : (
-              <button onClick={leaveRoom} className="px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700">
-                Leave Room
-              </button>
-            )}
-          </div>
-
-          <div className="text-sm text-gray-600">
-            {userId && (
-              <div>
-                Socket ID: {userId.slice(0, 6)} {joined && <span> • Room: {room}</span>}
-              </div>
-            )}
-          </div>
-        </div>
-
-        <div className="grid gap-6 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4">
-          <div className="relative rounded-xl overflow-hidden shadow-lg bg-black">
-            <video ref={localVideoRef} autoPlay playsInline className="w-full h-48 object-cover" />
-            <div className="absolute bottom-2 left-2 bg-blue-600 text-white text-xs px-2 py-1 rounded">
-              You ({userId?.slice(0, 5)})
-            </div>
-          </div>
-
-          {remoteStreams.map((s) => (
-            <div key={s.id} className="relative rounded-xl overflow-hidden shadow-lg bg-black">
-              <video
-                ref={(ref) => ref && (ref.srcObject = s.stream)}
-                autoPlay
-                playsInline
-                className="w-full h-48 object-cover"
-              />
-              <div className="absolute bottom-2 left-2 bg-gray-800 text-white text-xs px-2 py-1 rounded">
-                Peer ({s.id.slice(0, 5)})
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
-    </section>
-  );
+  <CameraGridUI
+  localVideoRef={localVideoRef}
+  remoteStreams={remoteStreams}
+  userId={userId}
+  room={room}
+  setRoom={setRoom}
+  joined={joined}
+  cameraStarted={cameraStarted}
+  startCamera={startCamera}
+  joinRoom={joinRoom}
+  leaveRoom={leaveRoom}
+  camOn={camOn}
+  micOn={micOn}
+  toggleCam={toggleCam}
+  toggleMic={toggleMic}
+/>
+);
 }
