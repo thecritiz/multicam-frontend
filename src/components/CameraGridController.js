@@ -2,7 +2,7 @@ import React, { useRef, useState, useEffect, useCallback } from "react";
 import { io } from "socket.io-client";
 import CameraGridUI from "./CameraGridUI";
 
-const SERVER_URL = "https://multicam-backend.onrender.com";
+const SERVER_URL = process.env.REACT_APP_SERVER_URL || "https://multicam-backend.onrender.com";
 const ICE_CONFIG = { iceServers: [{ urls: "stun:stun.l.google.com:19302" }] };
 
 export default function CameraGridController() {

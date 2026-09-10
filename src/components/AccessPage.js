@@ -5,7 +5,7 @@ export default function AccessPage({ onAccessGranted }) {
   const [accessCode, setAccessCode] = useState("");
   const [error, setError] = useState("");
 
-  const correctCode = "letmein"; // 🔑 Replace with your access code
+  const correctCode = process.env.REACT_APP_ACCESS_CODE || "letmein";
 
   const handleSubmit = (e) => {
     e.preventDefault();
