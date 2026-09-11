@@ -479,7 +479,7 @@ const css = `
 
 /* ── Spotlight video ── */
 function SpotlightVideo({ stream, name, badge = "Live" }) {
-  const ref = (el) => { if (el && stream && el.srcObject !== stream) el.srcObject = stream; };
+  const ref = bindStream(stream);
   return (
     <>
       <video ref={ref} autoPlay playsInline />
@@ -495,7 +495,7 @@ function SpotlightVideo({ stream, name, badge = "Live" }) {
 
 /* ── Thumbnail card ── */
 function ThumbCard({ stream, name, isActive, onClick }) {
-  const ref = (el) => { if (el && stream && el.srcObject !== stream) el.srcObject = stream; };
+  const ref = bindStream(stream);
   return (
     <div className={`m-thumb${isActive ? " sel" : ""}`} onClick={onClick}>
       <video ref={ref} autoPlay playsInline />
@@ -582,6 +582,17 @@ const Icon = {
       <path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4M16 17l5-5-5-5M21 12H9"/>
     </svg>
   ),
+  plus: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+      <path d="M12 5v14M5 12h14"/>
+    </svg>
+  ),
+  link: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71"/>
+      <path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71"/>
+    </svg>
+  ),
   live: (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
       <circle cx="12" cy="12" r="2"/>
@@ -596,9 +607,15 @@ const Icon = {
 };
 
 /* Guarded stream binding: only touch srcObject when it actually changes,
-   so re-renders don't restart <video> playback. */
+   so re-renders don't restart <video> playback. iOS Safari won't start a
+   stream from the autoPlay attribute alone when srcObject is set after mount
+   — an explicit play() (kicked off by the user's Join gesture) is required,
+   or remote audio/video silently never plays. */
 const bindStream = (stream) => (el) => {
-  if (el && stream && el.srcObject !== stream) el.srcObject = stream;
+  if (el && stream && el.srcObject !== stream) {
+    el.srcObject = stream;
+    el.play?.().catch(() => {});
+  }
 };
 
 /* ── Main export ── */
@@ -612,6 +629,10 @@ export default function CameraGridUI({
   onLogout,
   room,
   setRoom,
+  roomError,
+  creating = false,
+  newRoom,
+  shareUrl,
   joined,
   cameraStarted,
   startCamera,
@@ -636,7 +657,16 @@ export default function CameraGridUI({
   const [draft, setDraft] = useState("");
   const [readCount, setReadCount] = useState(0); // messages seen when chat panel last open
   const [selfBig, setSelfBig] = useState(false); // tap-swap: your view in the spotlight
+  const [copied, setCopied] = useState(false);
   const chatEndRef = useRef(null);
+
+  const copyLink = () => {
+    if (!shareUrl) return;
+    navigator.clipboard?.writeText(shareUrl).then(
+      () => { setCopied(true); setTimeout(() => setCopied(false), 1800); },
+      () => {}
+    );
+  };
   const pipRef = useRef(null);
   const dragRef = useRef(null); // live drag state; DOM-direct so moves never re-render
   const nameOf = (id) => usernames[id] || `Peer ${id.slice(0, 6)}`;
@@ -806,17 +836,24 @@ export default function CameraGridUI({
           </button>
 
           <div className="m-field">
-            <span className="m-flabel">Room</span>
+            <span className="m-flabel">Invite code</span>
             <input
               className="m-input"
               value={room}
               onChange={e => setRoom(e.target.value)}
-              placeholder="room-name"
+              placeholder="paste a code, or create one →"
+              disabled={joined}
               autoComplete="off"
               autoCorrect="off"
               autoCapitalize="off"
             />
           </div>
+
+          {!joined && (
+            <button className="m-btn" onClick={newRoom} disabled={creating} title="Create a fresh, private room">
+              {Icon.plus} {creating ? "…" : "New room"}
+            </button>
+          )}
 
           {!joined ? (
             <button className="m-btn join" onClick={joinRoom} disabled={!cameraStarted}>
@@ -825,6 +862,12 @@ export default function CameraGridUI({
           ) : (
             <button className="m-btn lv" onClick={leaveRoom}>
               {Icon.leave} Leave
+            </button>
+          )}
+
+          {shareUrl && (
+            <button className="m-btn" onClick={copyLink} title={shareUrl}>
+              {Icon.link} {copied ? "Copied ✓" : "Copy invite"}
             </button>
           )}
 
@@ -849,6 +892,12 @@ export default function CameraGridUI({
           {liveState === "error" && (
             <span style={{ fontSize: 11, color: "var(--red)", fontWeight: 500, whiteSpace: "nowrap" }}>
               Broadcast failed — is drover reachable?
+            </span>
+          )}
+
+          {roomError && (
+            <span style={{ fontSize: 11.5, color: "var(--red)", fontWeight: 500, flexBasis: "100%" }}>
+              {roomError}
             </span>
           )}
         </div>

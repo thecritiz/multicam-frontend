@@ -43,3 +43,20 @@ async function post(path, body) {
 
 export const signup = (username, password) => post("/auth/signup", { username, password });
 export const login = (username, password) => post("/auth/login", { username, password });
+
+// Mint a signed room code (authed). The code is the capability others need to
+// join; share it as a link. Returns { code }.
+export async function createRoom(token) {
+  let res;
+  try {
+    res = await fetch(`${SERVER_URL}/rooms/new`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  } catch {
+    throw new Error("Cannot reach the server — is it running?");
+  }
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);
+  return data;
+}

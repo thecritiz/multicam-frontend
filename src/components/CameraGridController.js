@@ -2,7 +2,7 @@ import React, { useRef, useState, useEffect, useCallback } from "react";
 import { io } from "socket.io-client";
 import CameraGridUI from "./CameraGridUI";
 import Broadcaster from "../lib/broadcaster";
-import { SERVER_URL } from "../auth";
+import { SERVER_URL, createRoom } from "../auth";
 
 // Drover (ABR broadcast server) base URL, e.g. http://localhost:8000.
 // Go Live is hidden entirely when unset. ws(s):// for ingest and http(s)://
@@ -14,13 +14,35 @@ const DROVER_WS = DROVER_URL.replace(/^http/, "ws");
 // derived from the room name so every room maps to a stable broadcast URL.
 const streamKeyForRoom = (room) => room.replace(/[^a-zA-Z0-9_-]/g, "-").slice(0, 64);
 
-// STUN-only fails outright across symmetric NATs / CGNAT (common in mobile
-// networks), so a TURN relay is configurable via env. Falls back to the old
-// STUN-only behavior when REACT_APP_TURN_URL is unset. REACT_APP_TURN_URL
-// accepts a comma-separated list so turn: and turns: variants of the same
-// relay can be offered together.
+// A direct peer-to-peer path only works when at least one side is reachable.
+// Between two devices on the same LAN that's trivial; between a home laptop
+// and a phone on mobile data — both behind NAT/CGNAT — it usually is NOT, and
+// STUN alone can't fix it. A TURN relay carries the media when direct fails,
+// so without one, calls to remote peers silently have no audio/video path.
+//
+// Precedence: env-configured TURN (your own coturn — best) → otherwise a free
+// public TURN fallback so remote calls work out of the box. Public TURN is
+// rate-limited and not for production traffic; set REACT_APP_TURN_URL to your
+// own relay for anything real.
+const PUBLIC_STUN = [
+  "stun:stun.l.google.com:19302",
+  "stun:stun1.l.google.com:19302",
+  "stun:global.stun.twilio.com:3478",
+];
+
+// Open Relay (Metered) free public TURN — verify/replace for production.
+const PUBLIC_TURN = {
+  urls: [
+    "turn:openrelay.metered.ca:80",
+    "turn:openrelay.metered.ca:443",
+    "turn:openrelay.metered.ca:443?transport=tcp",
+  ],
+  username: "openrelayproject",
+  credential: "openrelayproject",
+};
+
 function buildIceServers() {
-  const servers = [{ urls: "stun:stun.l.google.com:19302" }];
+  const servers = [{ urls: PUBLIC_STUN }];
   const turnUrls = (process.env.REACT_APP_TURN_URL || "")
     .split(",")
     .map((u) => u.trim())
@@ -31,6 +53,8 @@ function buildIceServers() {
       username: process.env.REACT_APP_TURN_USERNAME || "",
       credential: process.env.REACT_APP_TURN_CREDENTIAL || "",
     });
+  } else {
+    servers.push(PUBLIC_TURN);
   }
   return servers;
 }
@@ -103,7 +127,12 @@ export default function CameraGridController({ user, onLogout }) {
   const [remoteStreams, setRemoteStreams] = useState([]); // [{id, stream}]
   const [usernames, setUsernames] = useState({}); // socketId -> username
   const [userId, setUserId] = useState(null);
-  const [room, setRoom] = useState("");
+  // Prefill the room code from a shared invite link (?room=<code>).
+  const [room, setRoom] = useState(
+    () => new URLSearchParams(window.location.search).get("room")?.trim() || ""
+  );
+  const [roomError, setRoomError] = useState("");
+  const [creating, setCreating] = useState(false);
   const [joined, setJoined] = useState(false);
   const [cameraStarted, setCameraStarted] = useState(false);
   const [camOn, setCamOn] = useState(true);
@@ -250,6 +279,12 @@ export default function CameraGridController({ user, onLogout }) {
       setMessages((prev) => [...prev.slice(-199), msg]);
     });
 
+    // Server refused the join (bad/expired code) — surface it, stay out.
+    socketRef.current.on("join-error", (msg) => {
+      setRoomError(msg || "Could not join that room.");
+      setJoined(false);
+    });
+
     socketRef.current.on("user-disconnected", (id) => {
       console.log("user-disconnected", id);
       const pc = peersRef.current[id];
@@ -385,16 +420,40 @@ export default function CameraGridController({ user, onLogout }) {
     if (socketRef.current && joined) socketRef.current.emit("chat", text);
   };
 
+  // Reflect the current room in the URL so the tab's link is always a valid
+  // invite others can open.
+  const syncRoomToUrl = (code) => {
+    const url = code ? `${window.location.origin}/?room=${code}` : window.location.origin + "/";
+    window.history.replaceState(null, "", url);
+  };
+
+  const newRoom = async () => {
+    setRoomError("");
+    setCreating(true);
+    try {
+      const { code } = await createRoom(user.token);
+      setRoom(code);
+      syncRoomToUrl(code);
+    } catch (err) {
+      setRoomError(err.message);
+    } finally {
+      setCreating(false);
+    }
+  };
+
   const joinRoom = () => {
+    setRoomError("");
     if (!cameraStarted) {
-      alert("Please Start Camera before joining a room.");
+      setRoomError("Start your camera before joining.");
       return;
     }
-    if (!room || room.trim() === "") {
-      alert("Enter a room name.");
+    const code = room.trim();
+    if (!code) {
+      setRoomError("Paste an invite code, or create a new room.");
       return;
     }
-    socketRef.current.emit("join-room", room.trim());
+    syncRoomToUrl(code);
+    socketRef.current.emit("join-room", code);
     setMessages([]);
     setJoined(true);
   };
@@ -457,6 +516,10 @@ export default function CameraGridController({ user, onLogout }) {
       onLogout={onLogout}
       room={room}
       setRoom={setRoom}
+      roomError={roomError}
+      creating={creating}
+      newRoom={newRoom}
+      shareUrl={room ? `${window.location.origin}/?room=${room}` : null}
       joined={joined}
       cameraStarted={cameraStarted}
       startCamera={startCamera}
