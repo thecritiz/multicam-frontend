@@ -1,23 +1,28 @@
 import React, { useState } from "react";
 import CameraGrid from "./components/CameraGridController";
-import AccessPage from "./components/AccessPage";
+import AuthPage from "./components/AuthPage";
+import { getSession, saveSession, clearSession } from "./auth";
 
 function App() {
-  const [accessGranted, setAccessGranted] = useState(false);
+  const [session, setSession] = useState(getSession);
 
-  if (!accessGranted) {
-    return <AccessPage onAccessGranted={() => setAccessGranted(true)} />;
+  const handleLogout = () => {
+    clearSession();
+    setSession(null);
+  };
+
+  if (!session) {
+    return (
+      <AuthPage
+        onAuth={(s) => {
+          saveSession(s);
+          setSession(s);
+        }}
+      />
+    );
   }
 
-  return (
-    <div className="min-h-screen flex flex-col bg-gray-50">
-      {/* Main content */}
-      <main className="flex-1 container mx-auto p-6 space-y-12">
-        {/* Camera grid section */}
-        <CameraGrid />
-      </main> 
-    </div>
-  );
+  return <CameraGrid user={session} onLogout={handleLogout} />;
 }
 
 export default App;

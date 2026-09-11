@@ -86,8 +86,20 @@ const css = `
     white-space: nowrap;
   }
   .m-pill.live { border-color: rgba(52,211,153,0.4); background: rgba(52,211,153,0.08); color: var(--green); }
+  .m-pill.onair { border-color: rgba(248,113,113,0.45); background: rgba(248,113,113,0.1); color: var(--red); }
   .m-pill-dot { width: 5px; height: 5px; border-radius: 50%; background: currentColor; animation: blink 1.6s ease-in-out infinite; }
   .m-clock { font-size: 12px; font-weight: 500; color: var(--t2); white-space: nowrap; }
+  .m-user { display: flex; align-items: center; gap: 10px; }
+  .m-uname { font-size: 12px; font-weight: 600; color: var(--t2); white-space: nowrap; max-width: 110px; overflow: hidden; text-overflow: ellipsis; }
+  .m-logout {
+    width: 30px; height: 30px; border-radius: 8px;
+    display: flex; align-items: center; justify-content: center;
+    border: 1px solid var(--bdr2); background: var(--surf2);
+    color: var(--t2); cursor: pointer; transition: background 0.14s, color 0.14s;
+  }
+  .m-logout:active { opacity: 0.7; }
+  @media (hover: hover) { .m-logout:hover { background: var(--surf3); color: var(--t1); } }
+  .m-logout svg { width: 14px; height: 14px; }
 
   /* Hide room pill text on very small screens, keep dot */
   @media (max-width: 360px) {
@@ -138,6 +150,8 @@ const css = `
   .m-btn.cam  { background: rgba(108,143,255,0.1); border-color: rgba(108,143,255,0.35); color: var(--accent); }
   .m-btn.join { background: rgba(52,211,153,0.1);  border-color: rgba(52,211,153,0.35);  color: var(--green); }
   .m-btn.lv   { background: rgba(248,113,113,0.1); border-color: rgba(248,113,113,0.35); color: var(--red); }
+  .m-btn.golive { background: rgba(248,113,113,0.12); border-color: rgba(248,113,113,0.4); color: var(--red); }
+  .m-btn.watch  { background: rgba(167,139,250,0.1); border-color: rgba(167,139,250,0.35); color: var(--accent2); text-decoration: none; }
 
   /* ── STAGE ── */
   .m-stage {
@@ -337,7 +351,7 @@ const css = `
 `;
 
 /* ── Spotlight video ── */
-function SpotlightVideo({ stream, peerId }) {
+function SpotlightVideo({ stream, name }) {
   const ref = (el) => { if (el && stream) el.srcObject = stream; };
   return (
     <>
@@ -346,21 +360,21 @@ function SpotlightVideo({ stream, peerId }) {
       <div className="m-badge">Presenter</div>
       <div className="m-spot-name">
         <span className="m-ndot" />
-        Peer {peerId.slice(0, 8)}
+        {name}
       </div>
     </>
   );
 }
 
 /* ── Thumbnail card ── */
-function ThumbCard({ stream, peerId, isActive, onClick }) {
+function ThumbCard({ stream, name, isActive, onClick }) {
   const ref = (el) => { if (el && stream) el.srcObject = stream; };
   return (
     <div className={`m-thumb${isActive ? " sel" : ""}`} onClick={onClick}>
       <video ref={ref} autoPlay playsInline />
       <div className="m-thumb-meta">
         <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "80%" }}>
-          {peerId.slice(0, 8)}
+          {name}
         </span>
         <span className="m-rdot" />
       </div>
@@ -441,13 +455,26 @@ const Icon = {
       <path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4M16 17l5-5-5-5M21 12H9"/>
     </svg>
   ),
+  live: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+      <circle cx="12" cy="12" r="2"/>
+      <path d="M16.24 7.76a6 6 0 010 8.49M7.76 16.24a6 6 0 010-8.49M19.07 4.93a10 10 0 010 14.14M4.93 19.07a10 10 0 010-14.14"/>
+    </svg>
+  ),
+  logout: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4M16 17l5-5-5-5M21 12H9"/>
+    </svg>
+  ),
 };
 
 /* ── Main export ── */
 export default function CameraGridUI({
   localVideoRef,
   remoteStreams = [],
-  userId,
+  usernames = {},
+  username,
+  onLogout,
   room,
   setRoom,
   joined,
@@ -459,8 +486,15 @@ export default function CameraGridUI({
   micOn = true,
   toggleCam,
   toggleMic,
+  canGoLive = false,
+  liveState = "idle",
+  goLive,
+  endLive,
+  watchUrl,
 }) {
   const [pinnedId, setPinnedId] = useState(null);
+  const nameOf = (id) => usernames[id] || `Peer ${id.slice(0, 6)}`;
+  const isLive = liveState === "live";
 
   // Auto-pin first peer, clear pin when they leave
   useEffect(() => {
@@ -497,12 +531,26 @@ export default function CameraGridUI({
                 <span className="m-pill-text">{room}</span>
               </div>
             )}
+            {isLive && (
+              <div className="m-pill onair">
+                <span className="m-pill-dot" />
+                <span className="m-pill-text">LIVE</span>
+              </div>
+            )}
             <div className="m-pill">
               {totalPeers} <span className="m-pill-text">&nbsp;participant{totalPeers !== 1 ? "s" : ""}</span>
             </div>
           </div>
 
-          <Clock />
+          <div className="m-user">
+            {username && <span className="m-uname">{username}</span>}
+            <Clock />
+            {onLogout && (
+              <div className="m-logout" onClick={onLogout} title="Sign out">
+                {Icon.logout}
+              </div>
+            )}
+          </div>
         </div>
 
         {/* ── Join bar ── */}
@@ -535,9 +583,27 @@ export default function CameraGridUI({
             </button>
           )}
 
-          {userId && (
-            <span style={{ fontSize: 10, color: "var(--t3)", fontWeight: 500, marginLeft: "auto", whiteSpace: "nowrap" }}>
-              {userId.slice(0, 8)}…
+          {joined && canGoLive && (
+            isLive ? (
+              <button className="m-btn golive" onClick={endLive}>
+                {Icon.live} End Live
+              </button>
+            ) : (
+              <button className="m-btn golive" onClick={goLive} disabled={liveState === "connecting"}>
+                {Icon.live} {liveState === "connecting" ? "Starting…" : "Go Live"}
+              </button>
+            )
+          )}
+
+          {isLive && watchUrl && (
+            <a className="m-btn watch" href={watchUrl} target="_blank" rel="noreferrer" title="Open the public ABR watch page">
+              Watch ↗
+            </a>
+          )}
+
+          {liveState === "error" && (
+            <span style={{ fontSize: 11, color: "var(--red)", fontWeight: 500, whiteSpace: "nowrap" }}>
+              Broadcast failed — is drover reachable?
             </span>
           )}
         </div>
@@ -548,7 +614,7 @@ export default function CameraGridUI({
           {/* Spotlight */}
           <div className="m-spot">
             {spotlight ? (
-              <SpotlightVideo stream={spotlight.stream} peerId={spotlight.id} />
+              <SpotlightVideo stream={spotlight.stream} name={nameOf(spotlight.id)} />
             ) : (
               <div className="m-spot-empty">
                 <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1" strokeLinecap="round" opacity="0.2">
@@ -588,7 +654,7 @@ export default function CameraGridUI({
                 <ThumbCard
                   key={s.id}
                   stream={s.stream}
-                  peerId={s.id}
+                  name={nameOf(s.id)}
                   isActive={s.id === spotlight?.id}
                   onClick={() => setPinnedId(s.id)}
                 />

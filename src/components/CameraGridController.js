@@ -1,23 +1,115 @@
 import React, { useRef, useState, useEffect, useCallback } from "react";
 import { io } from "socket.io-client";
 import CameraGridUI from "./CameraGridUI";
+import Broadcaster from "../lib/broadcaster";
+import { SERVER_URL } from "../auth";
 
-const SERVER_URL = process.env.REACT_APP_SERVER_URL || "https://multicam-backend.onrender.com";
-const ICE_CONFIG = { iceServers: [{ urls: "stun:stun.l.google.com:19302" }] };
+// Drover (ABR broadcast server) base URL, e.g. http://localhost:8000.
+// Go Live is hidden entirely when unset. ws(s):// for ingest and http(s)://
+// for the watch page are both derived from this one value.
+const DROVER_URL = (process.env.REACT_APP_DROVER_URL || "").replace(/\/$/, "");
+const DROVER_WS = DROVER_URL.replace(/^http/, "ws");
 
-export default function CameraGridController() {
+// Stream keys must satisfy drover's STREAM_KEY_RE ([a-zA-Z0-9_-]{1,64}) —
+// derived from the room name so every room maps to a stable broadcast URL.
+const streamKeyForRoom = (room) => room.replace(/[^a-zA-Z0-9_-]/g, "-").slice(0, 64);
+
+// STUN-only fails outright across symmetric NATs / CGNAT (common in mobile
+// networks), so a TURN relay is configurable via env. Falls back to the old
+// STUN-only behavior when REACT_APP_TURN_URL is unset. REACT_APP_TURN_URL
+// accepts a comma-separated list so turn: and turns: variants of the same
+// relay can be offered together.
+function buildIceServers() {
+  const servers = [{ urls: "stun:stun.l.google.com:19302" }];
+  const turnUrls = (process.env.REACT_APP_TURN_URL || "")
+    .split(",")
+    .map((u) => u.trim())
+    .filter(Boolean);
+  if (turnUrls.length > 0) {
+    servers.push({
+      urls: turnUrls,
+      username: process.env.REACT_APP_TURN_USERNAME || "",
+      credential: process.env.REACT_APP_TURN_CREDENTIAL || "",
+    });
+  }
+  return servers;
+}
+
+const ICE_CONFIG = { iceServers: buildIceServers() };
+
+const VIDEO_CONSTRAINTS = {
+  width: { ideal: 1920 },
+  height: { ideal: 1080 },
+  frameRate: { ideal: 30, max: 60 },
+};
+
+const AUDIO_CONSTRAINTS = {
+  echoCancellation: true,
+  noiseSuppression: true,
+  autoGainControl: true,
+  sampleRate: 48000,
+  channelCount: 2,
+};
+
+const VIDEO_MAX_BITRATE = 4_000_000; // ~4 Mbps target, enough for crisp 1080p30
+
+// Preferred codec order: VP9/AV1 give better quality per bit than VP8/H.264,
+// at the cost of more CPU (no hardware encode on most devices).
+const CODEC_PRIORITY = ["video/VP9", "video/AV1", "video/H264", "video/VP8"];
+
+function sortCodecsByPriority(codecs) {
+  return [...codecs].sort((a, b) => {
+    const rank = (codec) => {
+      const i = CODEC_PRIORITY.indexOf(codec.mimeType);
+      return i === -1 ? CODEC_PRIORITY.length : i;
+    };
+    return rank(a) - rank(b);
+  });
+}
+
+async function configureVideoSender(sender) {
+  try {
+    const params = sender.getParameters();
+    if (!params.encodings || params.encodings.length === 0) {
+      params.encodings = [{}];
+    }
+    params.encodings[0].maxBitrate = VIDEO_MAX_BITRATE;
+    // Prioritize sharpness over frame rate when bandwidth gets tight.
+    params.degradationPreference = "maintain-resolution";
+    await sender.setParameters(params);
+  } catch (err) {
+    console.warn("Could not set video encoding parameters:", err);
+  }
+}
+
+function preferVideoCodecs(pc, sender) {
+  const transceiver = pc.getTransceivers().find((t) => t.sender === sender);
+  if (!transceiver || typeof transceiver.setCodecPreferences !== "function") return;
+  const caps = RTCRtpSender.getCapabilities("video");
+  if (!caps) return;
+  try {
+    transceiver.setCodecPreferences(sortCodecsByPriority(caps.codecs));
+  } catch (err) {
+    console.warn("Could not set codec preferences:", err);
+  }
+}
+
+export default function CameraGridController({ user, onLogout }) {
   const localVideoRef = useRef(null);
   const socketRef = useRef(null);
   const peersRef = useRef({});
   const localStreamRef = useRef(null);
+  const broadcasterRef = useRef(null);
 
   const [remoteStreams, setRemoteStreams] = useState([]); // [{id, stream}]
+  const [usernames, setUsernames] = useState({}); // socketId -> username
   const [userId, setUserId] = useState(null);
   const [room, setRoom] = useState("");
   const [joined, setJoined] = useState(false);
   const [cameraStarted, setCameraStarted] = useState(false);
   const [camOn, setCamOn] = useState(true);
   const [micOn, setMicOn] = useState(true);
+  const [liveState, setLiveState] = useState("idle"); // idle | connecting | live | error
 
   // --- WebRTC Logic ---
 
@@ -29,7 +121,11 @@ export default function CameraGridController() {
 
     if (localStreamRef.current) {
       localStreamRef.current.getTracks().forEach((track) => {
-        pc.addTrack(track, localStreamRef.current);
+        const sender = pc.addTrack(track, localStreamRef.current);
+        if (track.kind === "video") {
+          preferVideoCodecs(pc, sender);
+          configureVideoSender(sender);
+        }
       });
     }
 
@@ -59,8 +155,15 @@ export default function CameraGridController() {
     return pc;
   }, []);
 
+  // Payload is [{ id, username }] now that the signaling server authenticates
+  // sockets and knows display names.
   const handleUsers = useCallback(async (users) => {
-    for (const id of users) {
+    setUsernames((prev) => {
+      const next = { ...prev };
+      users.forEach(({ id, username }) => { next[id] = username; });
+      return next;
+    });
+    for (const { id } of users) {
       await createPeerConnection(id, true);
     }
   }, [createPeerConnection]);
@@ -94,11 +197,23 @@ export default function CameraGridController() {
   // --- Socket Connection ---
 
   useEffect(() => {
-    socketRef.current = io(SERVER_URL, { transports: ["websocket", "polling"] });
+    socketRef.current = io(SERVER_URL, {
+      transports: ["websocket", "polling"],
+      auth: { token: user.token },
+    });
 
     socketRef.current.on("connect", () => {
       setUserId(socketRef.current.id);
       console.log("socket connected:", socketRef.current.id);
+    });
+
+    // Server rejects the handshake when the JWT is missing/expired — send the
+    // user back through login rather than leaving them in a dead UI.
+    socketRef.current.on("connect_error", (err) => {
+      if (err && err.message === "unauthorized") {
+        console.warn("socket auth failed — session expired, logging out");
+        onLogout();
+      }
     });
 
     socketRef.current.on("users", handleUsers);
@@ -106,12 +221,23 @@ export default function CameraGridController() {
     socketRef.current.on("answer", handleReceiveAnswer);
     socketRef.current.on("candidate", handleNewCandidate);
 
+    // The new joiner initiates the WebRTC handshake (see users/offer flow),
+    // so this event only carries their display name for the UI.
+    socketRef.current.on("user-joined", ({ id, username }) => {
+      setUsernames((prev) => ({ ...prev, [id]: username }));
+    });
+
     socketRef.current.on("user-disconnected", (id) => {
       console.log("user-disconnected", id);
       const pc = peersRef.current[id];
       if (pc) pc.close();
       delete peersRef.current[id];
       setRemoteStreams((prev) => prev.filter((p) => p.id !== id));
+      setUsernames((prev) => {
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
     });
 
     return () => {
@@ -121,7 +247,7 @@ export default function CameraGridController() {
       Object.values(peersRef.current).forEach((pc) => pc && pc.close());
       peersRef.current = {};
     };
-  }, [handleUsers, handleReceiveOffer, handleReceiveAnswer, handleNewCandidate]);
+  }, [handleUsers, handleReceiveOffer, handleReceiveAnswer, handleNewCandidate, user.token, onLogout]);
 
   // --- Local Media Controls ---
 
@@ -134,7 +260,12 @@ export default function CameraGridController() {
 
   const startCamera = async () => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: VIDEO_CONSTRAINTS,
+        audio: AUDIO_CONSTRAINTS,
+      });
+      // Nudges the encoder to prioritize per-frame sharpness over motion smoothness.
+      stream.getVideoTracks().forEach((t) => (t.contentHint = "detail"));
       localStreamRef.current = stream;
       setCameraStarted(true);
     } catch (err) {
@@ -170,8 +301,41 @@ export default function CameraGridController() {
     setJoined(true);
   };
 
+  // --- Go Live (director mode) ---
+  // This client composites the whole call and pushes one stream to drover,
+  // which fans it out as an ABR HLS ladder to any number of viewers.
+
+  const broadcastStreams = useCallback(
+    () => [{ id: "local", stream: localStreamRef.current }, ...remoteStreams],
+    [remoteStreams]
+  );
+
+  const goLive = () => {
+    if (!joined || !DROVER_URL || broadcasterRef.current) return;
+    const key = streamKeyForRoom(room.trim());
+    const b = new Broadcaster(`${DROVER_WS}/ingest/${key}`, (state) => {
+      setLiveState(state);
+      if (state === "idle" || state === "error") broadcasterRef.current = null;
+    });
+    broadcasterRef.current = b;
+    b.start(broadcastStreams());
+  };
+
+  const endLive = useCallback(() => {
+    if (broadcasterRef.current) broadcasterRef.current.stop();
+  }, []);
+
+  // Keep the composite in sync as peers join/leave mid-broadcast.
+  useEffect(() => {
+    if (broadcasterRef.current) broadcasterRef.current.setStreams(broadcastStreams());
+  }, [broadcastStreams]);
+
+  // End the broadcast if the component unmounts (e.g. logout).
+  useEffect(() => endLive, [endLive]);
+
   const leaveRoom = () => {
     if (!joined) return;
+    endLive();
     Object.values(peersRef.current).forEach((pc) => pc && pc.close());
     peersRef.current = {};
     setRemoteStreams([]);
@@ -179,11 +343,16 @@ export default function CameraGridController() {
     setJoined(false);
   };
 
+  const watchUrl = joined && DROVER_URL ? `${DROVER_URL}/watch.html?key=${streamKeyForRoom(room.trim())}` : null;
+
   return (
     <CameraGridUI
       localVideoRef={localVideoRef}
       remoteStreams={remoteStreams}
+      usernames={usernames}
       userId={userId}
+      username={user.username}
+      onLogout={onLogout}
       room={room}
       setRoom={setRoom}
       joined={joined}
@@ -195,6 +364,11 @@ export default function CameraGridController() {
       micOn={micOn}
       toggleCam={toggleCam}
       toggleMic={toggleMic}
+      canGoLive={Boolean(DROVER_URL)}
+      liveState={liveState}
+      goLive={goLive}
+      endLive={endLive}
+      watchUrl={watchUrl}
     />
   );
 }
