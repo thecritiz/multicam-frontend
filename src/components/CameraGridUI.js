@@ -413,6 +413,45 @@ const css = `
     font-size: 9px; font-weight: 700;
     display: flex; align-items: center; justify-content: center;
   }
+
+  /* ── MOTION (all gated behind reduced-motion) ── */
+  @media (prefers-reduced-motion: no-preference) {
+    @keyframes stageIn { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: translateY(0); } }
+    .m-stage { animation: stageIn 0.5s cubic-bezier(0.22, 1, 0.36, 1); }
+
+    @keyframes panelIn { from { opacity: 0; transform: translateX(24px); } to { opacity: 1; transform: translateX(0); } }
+    .m-panel { animation: panelIn 0.28s cubic-bezier(0.22, 1, 0.36, 1); }
+
+    @keyframes msgIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+    .m-msg { animation: msgIn 0.2s ease-out; }
+
+    /* Perspective lift on hoverable video cards */
+    .m-strip { perspective: 800px; }
+    .m-thumb { transition: border-color 0.15s, transform 0.25s cubic-bezier(0.22, 1, 0.36, 1), box-shadow 0.25s; }
+    @media (hover: hover) {
+      .m-thumb:hover {
+        transform: translateY(-3px) rotateX(2.5deg) scale(1.02);
+        box-shadow: 0 12px 28px rgba(0,0,0,0.45);
+      }
+    }
+
+    @keyframes floatIdle { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-8px); } }
+    .m-spot-empty svg { animation: floatIdle 4.5s ease-in-out infinite; }
+
+    /* On-air glow breathes while broadcasting */
+    @keyframes onairGlow {
+      0%,100% { box-shadow: 0 0 0 0 rgba(248,113,113,0.0); }
+      50%     { box-shadow: 0 0 18px 2px rgba(248,113,113,0.35); }
+    }
+    .m-pill.onair { animation: onairGlow 2.4s ease-in-out infinite; }
+
+    .m-ctrl { transition: background 0.14s, color 0.14s, transform 0.2s cubic-bezier(0.22, 1, 0.36, 1); }
+    @media (hover: hover) {
+      .m-ctrl:hover { transform: translateY(-2px); }
+    }
+    .m-logo-icon { transition: transform 0.3s cubic-bezier(0.22, 1, 0.36, 1); }
+    .m-logo:hover .m-logo-icon { transform: rotate(-8deg) scale(1.08); }
+  }
 `;
 
 /* ── Spotlight video ── */
@@ -609,11 +648,13 @@ export default function CameraGridUI({
         <div className="m-top">
           <div className="m-logo">
             <div className="m-logo-icon">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5" strokeLinecap="round">
-                <path d="M15 10l4.553-2.276A1 1 0 0121 8.723v6.554a1 1 0 01-1.447.894L15 14M3 8a2 2 0 012-2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V8z"/>
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="white">
+                <circle cx="8" cy="9" r="3.1"/>
+                <circle cx="16" cy="9" r="3.1"/>
+                <circle cx="12" cy="15.6" r="3.5"/>
               </svg>
             </div>
-            <span>Camgrid</span>
+            <span>Herd</span>
           </div>
 
           <div className="m-top-mid">
