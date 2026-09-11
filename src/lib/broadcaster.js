@@ -149,11 +149,13 @@ export default class Broadcaster {
       const vw = video.videoWidth;
       const vh = video.videoHeight;
       if (!vw || !vh) return;
-      // object-fit: cover — crop the source to the cell's aspect ratio.
-      const scale = Math.max(cellW / vw, cellH / vh);
-      const sw = cellW / scale;
-      const sh = cellH / scale;
-      ctx.drawImage(video, (vw - sw) / 2, (vh - sh) / 2, sw, sh, x, y, cellW, cellH);
+      // object-fit: contain — letterbox instead of crop, so a portrait phone
+      // feed composited next to a landscape laptop feed keeps its full frame
+      // (cover-cropping was cutting phone streams down to the middle strip).
+      const scale = Math.min(cellW / vw, cellH / vh);
+      const dw = vw * scale;
+      const dh = vh * scale;
+      ctx.drawImage(video, 0, 0, vw, vh, x + (cellW - dw) / 2, y + (cellH - dh) / 2, dw, dh);
     });
   }
 

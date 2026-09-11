@@ -95,7 +95,6 @@ function preferVideoCodecs(pc, sender) {
 }
 
 export default function CameraGridController({ user, onLogout }) {
-  const localVideoRef = useRef(null);
   const socketRef = useRef(null);
   const peersRef = useRef({});
   const localStreamRef = useRef(null);
@@ -112,6 +111,12 @@ export default function CameraGridController({ user, onLogout }) {
   const [liveState, setLiveState] = useState("idle"); // idle | connecting | live | error
   const [sharing, setSharing] = useState(false);
   const [messages, setMessages] = useState([]); // [{from, username, text, ts}]
+  // localStream mirrors localStreamRef for rendering; cameraPreview is a
+  // separate MediaStream wrapping the (still-live) camera track while screen
+  // sharing, so the UI can show a FaceTime-style self view alongside the
+  // shared screen.
+  const [localStream, setLocalStream] = useState(null);
+  const [cameraPreview, setCameraPreview] = useState(null);
   const screenTrackRef = useRef(null);
   const cameraTrackRef = useRef(null);
 
@@ -261,13 +266,6 @@ export default function CameraGridController({ user, onLogout }) {
 
   // --- Local Media Controls ---
 
-  useEffect(() => {
-    if (cameraStarted && localVideoRef.current && localStreamRef.current) {
-      localVideoRef.current.srcObject = localStreamRef.current;
-      localVideoRef.current.muted = true;
-    }
-  }, [cameraStarted]);
-
   const startCamera = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
@@ -277,6 +275,7 @@ export default function CameraGridController({ user, onLogout }) {
       // Nudges the encoder to prioritize per-frame sharpness over motion smoothness.
       stream.getVideoTracks().forEach((t) => (t.contentHint = "detail"));
       localStreamRef.current = stream;
+      setLocalStream(stream);
       setCameraStarted(true);
     } catch (err) {
       console.error("getUserMedia error:", err.name, err.message);
@@ -335,6 +334,7 @@ export default function CameraGridController({ user, onLogout }) {
     );
     screenTrackRef.current = null;
     cameraTrackRef.current = null;
+    setCameraPreview(null);
     setSharing(false);
   }, []);
 
@@ -360,6 +360,9 @@ export default function CameraGridController({ user, onLogout }) {
       await replaceOutgoingVideoTrack(screenTrack);
       // The browser's own "Stop sharing" bar ends the track out from under us.
       screenTrack.onended = () => stopScreenShare();
+      // Camera keeps running while sharing — surface it separately so the UI
+      // can show a FaceTime-style self view next to the shared screen.
+      setCameraPreview(camTrack ? new MediaStream([camTrack]) : null);
       setSharing(true);
     } catch (err) {
       // NotAllowedError = user dismissed the picker; not an error worth surfacing.
@@ -433,7 +436,8 @@ export default function CameraGridController({ user, onLogout }) {
 
   return (
     <CameraGridUI
-      localVideoRef={localVideoRef}
+      localStream={localStream}
+      cameraPreview={cameraPreview}
       remoteStreams={remoteStreams}
       usernames={usernames}
       userId={userId}

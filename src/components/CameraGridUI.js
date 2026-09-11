@@ -9,10 +9,13 @@ const css = `
   /*
    * VIDEO CRISPNESS RULES (apply everywhere):
    * - Never scale a video element with CSS transforms — use width/height directly
-   * - object-fit: cover fills container without stretching pixels
    * - image-rendering: auto lets the GPU handle downscaling smoothly
    * - will-change: transform triggers GPU compositing layer → no tearing
    * - backface-visibility: hidden prevents subpixel bleed on some Android WebViews
+   *
+   * FIT: thumbnails cover (small previews, crop ok). Spotlight and PiP
+   * contain — a portrait phone feed on a landscape screen must letterbox,
+   * not center-crop away its top and bottom.
    */
   .m video {
     display: block;
@@ -24,6 +27,7 @@ const css = `
     backface-visibility: hidden;
     -webkit-backface-visibility: hidden;
   }
+  .m-spot > video, .m-pip video { object-fit: contain; background: #000; }
 
   /* ── Root ── */
   .m {
@@ -101,7 +105,20 @@ const css = `
   @media (hover: hover) { .m-logout:hover { background: var(--surf3); color: var(--t1); } }
   .m-logout svg { width: 14px; height: 14px; }
 
-  /* Hide room pill text on very small screens, keep dot */
+  /* ── Small-screen top bar: shed weight before things collide ──
+     The bar holds logo + pills + username + clock + logout; at phone widths
+     that overflowed and pills rendered on top of each other. Username and
+     clock go first (username is in the participants panel anyway), the
+     participant-count pill next, and the room pill truncates. */
+  .m-uname { max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .m-pill { min-width: 0; }
+  .m-pill-text { overflow: hidden; text-overflow: ellipsis; max-width: 34vw; }
+  @media (max-width: 560px) {
+    .m-uname { display: none; }
+    .m-clock { display: none; }
+    .m-pill.count { display: none; }
+    .m-top-mid { overflow: hidden; }
+  }
   @media (max-width: 360px) {
     .m-pill-text { display: none; }
     .m-logo span { display: none; }
@@ -203,7 +220,10 @@ const css = `
   }
   .m-spot-empty p { font-size: 13px; font-weight: 500; color: var(--t3); line-height: 1.6; }
 
-  /* ── PiP (your local camera) ── */
+  /* ── PiP (FaceTime-style self view) ──
+     Draggable anywhere in the spotlight via pointer events (position set as
+     inline left/top by JS, bounded to the container); tap swaps it with the
+     spotlight. */
   .m-pip {
     position: absolute;
     /* responsive size via clamp: min 96px, ideal 18vw, max 200px */
@@ -219,7 +239,10 @@ const css = `
     box-shadow: 0 6px 24px rgba(0,0,0,0.5);
     transition: box-shadow 0.2s;
     touch-action: none;
+    cursor: grab;
+    user-select: none; -webkit-user-select: none;
   }
+  .m-pip:active { cursor: grabbing; }
   @media (hover: hover) {
     .m-pip:hover { box-shadow: 0 10px 32px rgba(0,0,0,0.65); }
   }
@@ -456,7 +479,7 @@ const css = `
 
 /* ── Spotlight video ── */
 function SpotlightVideo({ stream, name }) {
-  const ref = (el) => { if (el && stream) el.srcObject = stream; };
+  const ref = (el) => { if (el && stream && el.srcObject !== stream) el.srcObject = stream; };
   return (
     <>
       <video ref={ref} autoPlay playsInline />
@@ -472,7 +495,7 @@ function SpotlightVideo({ stream, name }) {
 
 /* ── Thumbnail card ── */
 function ThumbCard({ stream, name, isActive, onClick }) {
-  const ref = (el) => { if (el && stream) el.srcObject = stream; };
+  const ref = (el) => { if (el && stream && el.srcObject !== stream) el.srcObject = stream; };
   return (
     <div className={`m-thumb${isActive ? " sel" : ""}`} onClick={onClick}>
       <video ref={ref} autoPlay playsInline />
@@ -572,9 +595,16 @@ const Icon = {
   ),
 };
 
+/* Guarded stream binding: only touch srcObject when it actually changes,
+   so re-renders don't restart <video> playback. */
+const bindStream = (stream) => (el) => {
+  if (el && stream && el.srcObject !== stream) el.srcObject = stream;
+};
+
 /* ── Main export ── */
 export default function CameraGridUI({
-  localVideoRef,
+  localStream,
+  cameraPreview,
   remoteStreams = [],
   usernames = {},
   username,
@@ -604,7 +634,10 @@ export default function CameraGridUI({
   const [panel, setPanel] = useState(null); // null | "chat" | "people"
   const [draft, setDraft] = useState("");
   const [readCount, setReadCount] = useState(0); // messages seen when chat panel last open
+  const [selfBig, setSelfBig] = useState(false); // tap-swap: your view in the spotlight
   const chatEndRef = useRef(null);
+  const pipRef = useRef(null);
+  const dragRef = useRef(null); // live drag state; DOM-direct so moves never re-render
   const nameOf = (id) => usernames[id] || `Peer ${id.slice(0, 6)}`;
   const isLive = liveState === "live";
   const unread = panel === "chat" ? 0 : messages.length - readCount;
@@ -613,6 +646,50 @@ export default function CameraGridUI({
   useEffect(() => {
     if (remoteStreams.length === 0) setPinnedId(null);
   }, [remoteStreams.length]);
+
+  // Nothing left to swap with → snap back to the normal layout.
+  useEffect(() => {
+    if (remoteStreams.length === 0 && !sharing) setSelfBig(false);
+  }, [remoteStreams.length, sharing]);
+
+  // --- PiP drag + tap ---
+  // Pointer events cover mouse and touch. Movement under the threshold on
+  // release counts as a tap (swap views); anything more is a drag, with the
+  // box clamped inside the spotlight container.
+  const onPipDown = (e) => {
+    const el = pipRef.current;
+    if (!el) return;
+    el.setPointerCapture(e.pointerId);
+    const r = el.getBoundingClientRect();
+    const p = el.parentElement.getBoundingClientRect();
+    dragRef.current = {
+      sx: e.clientX, sy: e.clientY,
+      ox: r.left - p.left, oy: r.top - p.top,
+      pw: p.width, ph: p.height, w: r.width, h: r.height,
+      moved: false,
+    };
+  };
+  const onPipMove = (e) => {
+    const d = dragRef.current;
+    const el = pipRef.current;
+    if (!d || !el) return;
+    const dx = e.clientX - d.sx;
+    const dy = e.clientY - d.sy;
+    if (!d.moved && Math.abs(dx) + Math.abs(dy) < 7) return;
+    d.moved = true;
+    const x = Math.min(Math.max(d.ox + dx, 4), d.pw - d.w - 4);
+    const y = Math.min(Math.max(d.oy + dy, 4), d.ph - d.h - 4);
+    el.style.left = `${x}px`;
+    el.style.top = `${y}px`;
+    el.style.right = "auto";
+    el.style.bottom = "auto";
+  };
+  const onPipUp = () => {
+    const d = dragRef.current;
+    dragRef.current = null;
+    if (d && !d.moved) setSelfBig((v) => !v); // tap → swap with spotlight
+  };
+
 
   // Chat panel open → everything is read; keep it scrolled to the newest message.
   useEffect(() => {
@@ -638,6 +715,18 @@ export default function CameraGridUI({
 
   const showStrip = remoteStreams.length >= 2;
   const totalPeers = remoteStreams.length + 1;
+
+  // What goes where. Your "self" feed is the camera preview while sharing
+  // (so the PiP shows you, not your own screen); tap-swap (selfBig) trades
+  // places with the spotlight. When sharing with nobody else in the room,
+  // the swap is between your camera and your screen.
+  const selfStream = (sharing && cameraPreview) || localStream;
+  const bigSelf = selfBig ? selfStream : null;
+  const pipStream = selfBig ? (spotlight?.stream || (sharing ? localStream : null)) : selfStream;
+  const pipShowsSelf = !selfBig;
+  const pipLabel = selfBig
+    ? (spotlight ? nameOf(spotlight.id) : "Your screen")
+    : !cameraStarted ? "No cam" : sharing ? "You" : camOn ? "You" : "Cam off";
 
   return (
     <>
@@ -670,7 +759,7 @@ export default function CameraGridUI({
                 <span className="m-pill-text">LIVE</span>
               </div>
             )}
-            <div className="m-pill">
+            <div className="m-pill count">
               {totalPeers} <span className="m-pill-text">&nbsp;participant{totalPeers !== 1 ? "s" : ""}</span>
             </div>
           </div>
@@ -746,7 +835,17 @@ export default function CameraGridUI({
 
           {/* Spotlight */}
           <div className="m-spot">
-            {spotlight ? (
+            {bigSelf ? (
+              <>
+                <video ref={bindStream(bigSelf)} autoPlay playsInline muted />
+                <div className="m-spot-grad" />
+                <div className="m-badge">You</div>
+                <div className="m-spot-name">
+                  <span className="m-ndot" />
+                  {username}
+                </div>
+              </>
+            ) : spotlight ? (
               <SpotlightVideo stream={spotlight.stream} name={nameOf(spotlight.id)} />
             ) : (
               <div className="m-spot-empty">
@@ -757,16 +856,25 @@ export default function CameraGridUI({
               </div>
             )}
 
-            {/* PiP — your local feed */}
-            <div className="m-pip">
-              {cameraStarted && (
+            {/* PiP — draggable self view; tap to swap with the spotlight */}
+            <div
+              className="m-pip"
+              ref={pipRef}
+              onPointerDown={onPipDown}
+              onPointerMove={onPipMove}
+              onPointerUp={onPipUp}
+              onPointerCancel={onPipUp}
+              title={selfBig ? "Tap to swap back" : "Drag to move · tap to swap"}
+            >
+              {pipStream && (
                 <video
-                  ref={localVideoRef}
-                  autoPlay playsInline muted
-                  style={{ display: camOn ? "block" : "none" }}
+                  key={selfBig ? "pip-other" : "pip-self"}
+                  ref={bindStream(pipStream)}
+                  autoPlay playsInline muted={pipShowsSelf}
+                  style={{ display: pipShowsSelf && !sharing && !camOn ? "none" : "block", pointerEvents: "none" }}
                 />
               )}
-              {(!cameraStarted || !camOn) && (
+              {(!pipStream || (pipShowsSelf && !sharing && (!cameraStarted || !camOn))) && (
                 <div className="m-pip-off">
                   <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" opacity="0.3">
                     <line x1="2" y1="2" x2="22" y2="22"/>
@@ -774,9 +882,7 @@ export default function CameraGridUI({
                   </svg>
                 </div>
               )}
-              <div className="m-pip-lbl">
-                {!cameraStarted ? "No cam" : sharing ? "Your screen" : camOn ? "You" : "Cam off"}
-              </div>
+              <div className="m-pip-lbl">{pipLabel}</div>
             </div>
           </div>
 
@@ -887,7 +993,7 @@ export default function CameraGridUI({
             {Icon.people}
           </div>
 
-          <div className="m-sep" />
+          {joined && <div className="m-sep" />}
 
           {joined && (
             <div className="m-ctrl end" onClick={leaveRoom} title="Leave call">
