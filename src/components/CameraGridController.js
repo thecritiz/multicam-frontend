@@ -110,6 +110,10 @@ export default function CameraGridController({ user, onLogout }) {
   const [camOn, setCamOn] = useState(true);
   const [micOn, setMicOn] = useState(true);
   const [liveState, setLiveState] = useState("idle"); // idle | connecting | live | error
+  const [sharing, setSharing] = useState(false);
+  const [messages, setMessages] = useState([]); // [{from, username, text, ts}]
+  const screenTrackRef = useRef(null);
+  const cameraTrackRef = useRef(null);
 
   // --- WebRTC Logic ---
 
@@ -227,6 +231,12 @@ export default function CameraGridController({ user, onLogout }) {
       setUsernames((prev) => ({ ...prev, [id]: username }));
     });
 
+    // Sender identity is attached server-side from the authed socket; the
+    // sender receives their own message through this same event (no echo).
+    socketRef.current.on("chat", (msg) => {
+      setMessages((prev) => [...prev.slice(-199), msg]);
+    });
+
     socketRef.current.on("user-disconnected", (id) => {
       console.log("user-disconnected", id);
       const pc = peersRef.current[id];
@@ -288,6 +298,79 @@ export default function CameraGridController({ user, onLogout }) {
     setMicOn(enabled);
   };
 
+  // --- Screen share ---
+  // Swaps the video track in-place: replaceTrack() on every peer's sender (no
+  // renegotiation needed), and removeTrack/addTrack on the local MediaStream so
+  // the PiP element and the broadcast composite both follow automatically.
+
+  const replaceOutgoingVideoTrack = async (nextTrack) => {
+    await Promise.all(
+      Object.values(peersRef.current).map(async (pc) => {
+        const sender = pc.getSenders().find((s) => s.track && s.track.kind === "video");
+        if (sender) {
+          try { await sender.replaceTrack(nextTrack); } catch (err) { console.warn("replaceTrack failed:", err); }
+        }
+      })
+    );
+  };
+
+  const stopScreenShare = useCallback(async () => {
+    const screenTrack = screenTrackRef.current;
+    const camTrack = cameraTrackRef.current;
+    if (!screenTrack) return;
+    screenTrack.onended = null;
+    screenTrack.stop();
+    const stream = localStreamRef.current;
+    if (stream) {
+      stream.removeTrack(screenTrack);
+      if (camTrack) stream.addTrack(camTrack);
+    }
+    await Promise.all(
+      Object.values(peersRef.current).map(async (pc) => {
+        const sender = pc.getSenders().find((s) => s.track === screenTrack || (s.track && s.track.kind === "video"));
+        if (sender) {
+          try { await sender.replaceTrack(camTrack || null); } catch (err) { console.warn("replaceTrack failed:", err); }
+        }
+      })
+    );
+    screenTrackRef.current = null;
+    cameraTrackRef.current = null;
+    setSharing(false);
+  }, []);
+
+  const toggleScreenShare = async () => {
+    if (sharing) return stopScreenShare();
+    if (!localStreamRef.current) {
+      alert("Start your camera first.");
+      return;
+    }
+    try {
+      const display = await navigator.mediaDevices.getDisplayMedia({
+        video: { frameRate: { ideal: 30 } },
+        audio: false,
+      });
+      const screenTrack = display.getVideoTracks()[0];
+      screenTrack.contentHint = "text"; // favor legibility of shared content
+      const stream = localStreamRef.current;
+      const camTrack = stream.getVideoTracks()[0] || null;
+      cameraTrackRef.current = camTrack;
+      screenTrackRef.current = screenTrack;
+      if (camTrack) stream.removeTrack(camTrack);
+      stream.addTrack(screenTrack);
+      await replaceOutgoingVideoTrack(screenTrack);
+      // The browser's own "Stop sharing" bar ends the track out from under us.
+      screenTrack.onended = () => stopScreenShare();
+      setSharing(true);
+    } catch (err) {
+      // NotAllowedError = user dismissed the picker; not an error worth surfacing.
+      if (err.name !== "NotAllowedError") console.error("getDisplayMedia error:", err);
+    }
+  };
+
+  const sendChat = (text) => {
+    if (socketRef.current && joined) socketRef.current.emit("chat", text);
+  };
+
   const joinRoom = () => {
     if (!cameraStarted) {
       alert("Please Start Camera before joining a room.");
@@ -298,6 +381,7 @@ export default function CameraGridController({ user, onLogout }) {
       return;
     }
     socketRef.current.emit("join-room", room.trim());
+    setMessages([]);
     setJoined(true);
   };
 
@@ -336,9 +420,11 @@ export default function CameraGridController({ user, onLogout }) {
   const leaveRoom = () => {
     if (!joined) return;
     endLive();
+    if (sharing) stopScreenShare();
     Object.values(peersRef.current).forEach((pc) => pc && pc.close());
     peersRef.current = {};
     setRemoteStreams([]);
+    setMessages([]);
     socketRef.current.emit("leave-room");
     setJoined(false);
   };
@@ -369,6 +455,10 @@ export default function CameraGridController({ user, onLogout }) {
       goLive={goLive}
       endLive={endLive}
       watchUrl={watchUrl}
+      sharing={sharing}
+      toggleScreenShare={toggleScreenShare}
+      messages={messages}
+      sendChat={sendChat}
     />
   );
 }

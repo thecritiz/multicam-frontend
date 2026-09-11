@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 
 const css = `
   @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600&display=swap');
@@ -348,6 +348,71 @@ const css = `
     .m-ctrl { min-width: 44px; height: 44px; }
     .m-pip { width: clamp(140px, 14vw, 210px); bottom: 16px; right: 16px; }
   }
+
+  /* ── SIDE PANEL (chat / participants) ── */
+  .m-panel {
+    flex-shrink: 0;
+    width: min(300px, 85vw);
+    display: flex; flex-direction: column;
+    background: var(--surf);
+    border: 1px solid var(--bdr); border-radius: 14px;
+    overflow: hidden;
+    margin-bottom: 0;
+  }
+  /* On phones the stage is a column — panel becomes an overlay so video stays visible */
+  @media (max-width: 767px) {
+    .m-panel {
+      position: absolute; top: 0; right: 0; bottom: 0; z-index: 20;
+      border-radius: 14px 0 0 14px;
+      box-shadow: -8px 0 32px rgba(0,0,0,0.5);
+    }
+    .m-stage { position: relative; }
+  }
+  .m-panel-head {
+    flex-shrink: 0;
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--bdr);
+    font-size: 12px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase;
+    color: var(--t2);
+  }
+  .m-panel-x { cursor: pointer; color: var(--t3); padding: 2px 6px; border-radius: 6px; }
+  .m-panel-x:hover { color: var(--t1); background: var(--surf3); }
+  .m-panel-body { flex: 1; min-height: 0; overflow-y: auto; padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
+  .m-msg { font-size: 13px; line-height: 1.45; word-break: break-word; }
+  .m-msg-user { font-weight: 700; color: var(--accent); margin-right: 6px; }
+  .m-msg-user.me { color: var(--green); }
+  .m-msg-time { font-size: 10px; color: var(--t3); margin-left: 6px; }
+  .m-msg-empty { font-size: 12px; color: var(--t3); text-align: center; margin-top: 20px; }
+  .m-chat-form {
+    flex-shrink: 0; display: flex; gap: 6px;
+    padding: 10px 12px; border-top: 1px solid var(--bdr);
+  }
+  .m-chat-input {
+    flex: 1; min-width: 0;
+    background: var(--surf2); border: 1px solid var(--bdr2); border-radius: 9px;
+    padding: 8px 12px; font-family: var(--sans); font-size: 16px; color: var(--t1); outline: none;
+    -webkit-appearance: none;
+  }
+  .m-chat-input:focus { border-color: var(--accent); }
+  .m-chat-send {
+    flex-shrink: 0; padding: 8px 14px; border-radius: 9px; border: 1px solid rgba(108,143,255,0.35);
+    background: rgba(108,143,255,0.1); color: var(--accent);
+    font-family: var(--sans); font-size: 13px; font-weight: 600; cursor: pointer;
+  }
+  .m-chat-send:disabled { opacity: 0.3; pointer-events: none; }
+  .m-person { display: flex; align-items: center; gap: 10px; font-size: 13px; font-weight: 500; }
+  .m-person-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); flex-shrink: 0; }
+  .m-person-you { font-size: 10px; color: var(--t3); }
+  .m-ctrl.active { background: rgba(108,143,255,0.12); border-color: rgba(108,143,255,0.4); color: var(--accent); }
+  .m-ctrl { position: relative; }
+  .m-ctrl-badge {
+    position: absolute; top: -4px; right: -4px;
+    min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px;
+    background: var(--red); color: #fff;
+    font-size: 9px; font-weight: 700;
+    display: flex; align-items: center; justify-content: center;
+  }
 `;
 
 /* ── Spotlight video ── */
@@ -491,15 +556,42 @@ export default function CameraGridUI({
   goLive,
   endLive,
   watchUrl,
+  sharing = false,
+  toggleScreenShare,
+  messages = [],
+  sendChat,
 }) {
   const [pinnedId, setPinnedId] = useState(null);
+  const [panel, setPanel] = useState(null); // null | "chat" | "people"
+  const [draft, setDraft] = useState("");
+  const [readCount, setReadCount] = useState(0); // messages seen when chat panel last open
+  const chatEndRef = useRef(null);
   const nameOf = (id) => usernames[id] || `Peer ${id.slice(0, 6)}`;
   const isLive = liveState === "live";
+  const unread = panel === "chat" ? 0 : messages.length - readCount;
 
   // Auto-pin first peer, clear pin when they leave
   useEffect(() => {
     if (remoteStreams.length === 0) setPinnedId(null);
   }, [remoteStreams.length]);
+
+  // Chat panel open → everything is read; keep it scrolled to the newest message.
+  useEffect(() => {
+    if (panel === "chat") {
+      setReadCount(messages.length);
+      chatEndRef.current?.scrollIntoView({ block: "end" });
+    }
+  }, [panel, messages.length]);
+
+  const submitChat = (e) => {
+    e.preventDefault();
+    const text = draft.trim();
+    if (!text || !sendChat) return;
+    sendChat(text);
+    setDraft("");
+  };
+
+  const togglePanel = (name) => setPanel((p) => (p === name ? null : name));
 
   const spotlight = remoteStreams.length > 0
     ? (remoteStreams.find(s => s.id === pinnedId) || remoteStreams[0])
@@ -642,7 +734,7 @@ export default function CameraGridUI({
                 </div>
               )}
               <div className="m-pip-lbl">
-                {!cameraStarted ? "No cam" : camOn ? "You" : "Cam off"}
+                {!cameraStarted ? "No cam" : sharing ? "Your screen" : camOn ? "You" : "Cam off"}
               </div>
             </div>
           </div>
@@ -661,6 +753,63 @@ export default function CameraGridUI({
               ))}
             </div>
           )}
+
+          {/* Side panel — chat / participants */}
+          {panel === "chat" && (
+            <div className="m-panel">
+              <div className="m-panel-head">
+                Chat
+                <span className="m-panel-x" onClick={() => setPanel(null)}>✕</span>
+              </div>
+              <div className="m-panel-body">
+                {messages.length === 0 && (
+                  <div className="m-msg-empty">{joined ? "No messages yet — say hi!" : "Join a room to chat."}</div>
+                )}
+                {messages.map((m, i) => (
+                  <div className="m-msg" key={`${m.ts}-${i}`}>
+                    <span className={`m-msg-user${m.username === username ? " me" : ""}`}>{m.username}</span>
+                    {m.text}
+                    <span className="m-msg-time">
+                      {new Date(m.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                    </span>
+                  </div>
+                ))}
+                <div ref={chatEndRef} />
+              </div>
+              <form className="m-chat-form" onSubmit={submitChat}>
+                <input
+                  className="m-chat-input"
+                  value={draft}
+                  onChange={(e) => setDraft(e.target.value)}
+                  placeholder={joined ? "Message the room…" : "Join a room first"}
+                  disabled={!joined}
+                  maxLength={500}
+                />
+                <button className="m-chat-send" type="submit" disabled={!joined || !draft.trim()}>Send</button>
+              </form>
+            </div>
+          )}
+
+          {panel === "people" && (
+            <div className="m-panel">
+              <div className="m-panel-head">
+                Participants ({totalPeers})
+                <span className="m-panel-x" onClick={() => setPanel(null)}>✕</span>
+              </div>
+              <div className="m-panel-body">
+                <div className="m-person">
+                  <span className="m-person-dot" />
+                  {username} <span className="m-person-you">(you)</span>
+                </div>
+                {remoteStreams.map((s) => (
+                  <div className="m-person" key={s.id}>
+                    <span className="m-person-dot" />
+                    {nameOf(s.id)}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
 
         {/* ── Bottom bar ── */}
@@ -671,16 +820,29 @@ export default function CameraGridUI({
           <div className={`m-ctrl${!camOn ? " off" : ""}`} onClick={toggleCam} title={camOn ? "Stop video" : "Start video"}>
             {camOn ? Icon.cam : Icon.camOff}
           </div>
-          <div className="m-ctrl hide-xs" title="Share screen">
+          <div
+            className={`m-ctrl hide-xs${sharing ? " active" : ""}`}
+            onClick={toggleScreenShare}
+            title={sharing ? "Stop sharing" : "Share screen"}
+          >
             {Icon.screen}
           </div>
 
           <div className="m-sep hide-xs" />
 
-          <div className="m-ctrl hide-xs" title="Chat">
+          <div
+            className={`m-ctrl${panel === "chat" ? " active" : ""}`}
+            onClick={() => togglePanel("chat")}
+            title="Chat"
+          >
             {Icon.chat}
+            {unread > 0 && <span className="m-ctrl-badge">{unread > 9 ? "9+" : unread}</span>}
           </div>
-          <div className="m-ctrl hide-xs" title="Participants">
+          <div
+            className={`m-ctrl${panel === "people" ? " active" : ""}`}
+            onClick={() => togglePanel("people")}
+            title="Participants"
+          >
             {Icon.people}
           </div>
 
