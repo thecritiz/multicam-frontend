@@ -478,13 +478,13 @@ const css = `
 `;
 
 /* ── Spotlight video ── */
-function SpotlightVideo({ stream, name }) {
+function SpotlightVideo({ stream, name, badge = "Live" }) {
   const ref = (el) => { if (el && stream && el.srcObject !== stream) el.srcObject = stream; };
   return (
     <>
       <video ref={ref} autoPlay playsInline />
       <div className="m-spot-grad" />
-      <div className="m-badge">Presenter</div>
+      <div className="m-badge">{badge}</div>
       <div className="m-spot-name">
         <span className="m-ndot" />
         {name}
@@ -605,6 +605,7 @@ const bindStream = (stream) => (el) => {
 export default function CameraGridUI({
   localStream,
   cameraPreview,
+  presenterId,
   remoteStreams = [],
   usernames = {},
   username,
@@ -651,6 +652,12 @@ export default function CameraGridUI({
   useEffect(() => {
     if (remoteStreams.length === 0 && !sharing) setSelfBig(false);
   }, [remoteStreams.length, sharing]);
+
+  // Starting or stopping a share resets the swap so the presentation
+  // convention holds: screen big + camera PiP the moment you present.
+  useEffect(() => {
+    setSelfBig(false);
+  }, [sharing]);
 
   // --- PiP drag + tap ---
   // Pointer events cover mouse and touch. Movement under the threshold on
@@ -709,24 +716,40 @@ export default function CameraGridUI({
 
   const togglePanel = (name) => setPanel((p) => (p === name ? null : name));
 
-  const spotlight = remoteStreams.length > 0
+  // A presenting peer takes the stage over any manual pin (FaceTime-style).
+  const presenterRemote = presenterId ? remoteStreams.find((r) => r.id === presenterId) : null;
+  const spotlight = presenterRemote || (remoteStreams.length > 0
     ? (remoteStreams.find(s => s.id === pinnedId) || remoteStreams[0])
-    : null;
+    : null);
+  const spotlightBadge = spotlight === presenterRemote && presenterRemote ? "Presenting" : "Live";
 
-  const showStrip = remoteStreams.length >= 2;
+  // While you present, every remote drops to the strip (your screen holds the
+  // stage); otherwise the strip appears once there are 2+ remotes.
+  const showStrip = remoteStreams.length >= (sharing ? 1 : 2);
   const totalPeers = remoteStreams.length + 1;
 
-  // What goes where. Your "self" feed is the camera preview while sharing
-  // (so the PiP shows you, not your own screen); tap-swap (selfBig) trades
-  // places with the spotlight. When sharing with nobody else in the room,
-  // the swap is between your camera and your screen.
-  const selfStream = (sharing && cameraPreview) || localStream;
-  const bigSelf = selfBig ? selfStream : null;
-  const pipStream = selfBig ? (spotlight?.stream || (sharing ? localStream : null)) : selfStream;
-  const pipShowsSelf = !selfBig;
-  const pipLabel = selfBig
-    ? (spotlight ? nameOf(spotlight.id) : "Your screen")
-    : !cameraStarted ? "No cam" : sharing ? "You" : camOn ? "You" : "Cam off";
+  // What goes where.
+  // Sharing (you're the presenter): your screen is the presentation on stage,
+  // your camera rides the PiP — tap swaps the two. Not sharing: remote
+  // spotlight on stage, your camera in the PiP — tap swaps you with them.
+  let bigSelf = null;
+  let pipStream = null;
+  let pipShowsSelf = true;
+  let pipLabel = "";
+  if (sharing) {
+    bigSelf = selfBig ? (cameraPreview || localStream) : localStream;
+    pipStream = selfBig ? localStream : cameraPreview;
+    pipShowsSelf = true;
+    pipLabel = selfBig ? "Your screen" : camOn ? "You" : "Cam off";
+  } else {
+    bigSelf = selfBig ? localStream : null;
+    pipStream = selfBig ? (spotlight?.stream || null) : localStream;
+    pipShowsSelf = !selfBig;
+    pipLabel = selfBig
+      ? (spotlight ? nameOf(spotlight.id) : "You")
+      : !cameraStarted ? "No cam" : camOn ? "You" : "Cam off";
+  }
+  const selfBadge = sharing && !selfBig ? "You're presenting" : "You";
 
   return (
     <>
@@ -837,16 +860,16 @@ export default function CameraGridUI({
           <div className="m-spot">
             {bigSelf ? (
               <>
-                <video ref={bindStream(bigSelf)} autoPlay playsInline muted />
+                <video key={sharing && !selfBig ? "spot-screen" : "spot-cam"} ref={bindStream(bigSelf)} autoPlay playsInline muted />
                 <div className="m-spot-grad" />
-                <div className="m-badge">You</div>
+                <div className="m-badge">{selfBadge}</div>
                 <div className="m-spot-name">
                   <span className="m-ndot" />
                   {username}
                 </div>
               </>
             ) : spotlight ? (
-              <SpotlightVideo stream={spotlight.stream} name={nameOf(spotlight.id)} />
+              <SpotlightVideo stream={spotlight.stream} name={nameOf(spotlight.id)} badge={spotlightBadge} />
             ) : (
               <div className="m-spot-empty">
                 <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1" strokeLinecap="round" opacity="0.2">

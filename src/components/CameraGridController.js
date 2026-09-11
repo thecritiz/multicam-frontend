@@ -117,6 +117,7 @@ export default function CameraGridController({ user, onLogout }) {
   // shared screen.
   const [localStream, setLocalStream] = useState(null);
   const [cameraPreview, setCameraPreview] = useState(null);
+  const [presenterId, setPresenterId] = useState(null); // remote peer currently screen sharing
   const screenTrackRef = useRef(null);
   const cameraTrackRef = useRef(null);
 
@@ -234,6 +235,13 @@ export default function CameraGridController({ user, onLogout }) {
     // so this event only carries their display name for the UI.
     socketRef.current.on("user-joined", ({ id, username }) => {
       setUsernames((prev) => ({ ...prev, [id]: username }));
+      // Late joiners missed the original presenting event — re-announce.
+      if (screenTrackRef.current) socketRef.current.emit("presenting", true);
+    });
+
+    // A peer started/stopped screen sharing — their share takes the stage.
+    socketRef.current.on("presenting", ({ from, presenting }) => {
+      setPresenterId((prev) => (presenting ? from : prev === from ? null : prev));
     });
 
     // Sender identity is attached server-side from the authed socket; the
@@ -248,6 +256,7 @@ export default function CameraGridController({ user, onLogout }) {
       if (pc) pc.close();
       delete peersRef.current[id];
       setRemoteStreams((prev) => prev.filter((p) => p.id !== id));
+      setPresenterId((prev) => (prev === id ? null : prev));
       setUsernames((prev) => {
         const next = { ...prev };
         delete next[id];
@@ -336,6 +345,7 @@ export default function CameraGridController({ user, onLogout }) {
     cameraTrackRef.current = null;
     setCameraPreview(null);
     setSharing(false);
+    socketRef.current?.emit("presenting", false);
   }, []);
 
   const toggleScreenShare = async () => {
@@ -364,6 +374,7 @@ export default function CameraGridController({ user, onLogout }) {
       // can show a FaceTime-style self view next to the shared screen.
       setCameraPreview(camTrack ? new MediaStream([camTrack]) : null);
       setSharing(true);
+      socketRef.current?.emit("presenting", true);
     } catch (err) {
       // NotAllowedError = user dismissed the picker; not an error worth surfacing.
       if (err.name !== "NotAllowedError") console.error("getDisplayMedia error:", err);
@@ -428,6 +439,7 @@ export default function CameraGridController({ user, onLogout }) {
     peersRef.current = {};
     setRemoteStreams([]);
     setMessages([]);
+    setPresenterId(null);
     socketRef.current.emit("leave-room");
     setJoined(false);
   };
@@ -454,6 +466,7 @@ export default function CameraGridController({ user, onLogout }) {
       micOn={micOn}
       toggleCam={toggleCam}
       toggleMic={toggleMic}
+      presenterId={presenterId}
       canGoLive={Boolean(DROVER_URL)}
       liveState={liveState}
       goLive={goLive}
